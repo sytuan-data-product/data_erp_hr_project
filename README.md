@@ -1,5 +1,6 @@
 # data_erp_hr_project
 This repository covers all/almost processes that a Data Analyst/Analytic Engineer would need to complete in an ERP/HR project.
+
 There are **3 modules** in my project: 
   1. **Attendance** (check-in/check-out) management & attendance complaint
   2. **Overtime** request & approval
