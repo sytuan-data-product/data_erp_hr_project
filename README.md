@@ -10,8 +10,8 @@ This document includes:
   2. **Scripting**: the SQL jobs run at the database.
   3. **Visualization**: Analytic documents with the dashboards for customers.
 
-You can access Modeling & Visualization documents at the links below: 
+You can access **Modeling & Visualization** documents at the links below: 
   1. [Conceptual model & Logical model](https://drive.google.com/file/d/1jwrRMSy3suCIOt6F4Pll7s-t5AMjmLoo/view?usp=drive_link)
-  2. [Visualization documents]
+  2. [Visualization documents](https://drive.google.com/file/d/1-GLB4zsnhLy4BMws_LFt4sJl5StCdjBv/view?usp=drive_link)
 
 And you can research my **SQL script** in the attached files above.
