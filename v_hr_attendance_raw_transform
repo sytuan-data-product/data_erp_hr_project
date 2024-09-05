@@ -1,1 +1,288 @@
+-- public.v_igo_attendance_raw_transform source
 
+CREATE OR REPLACE VIEW public.v_igo_attendance_raw_transform
+AS WITH machine_company_rel AS (
+         SELECT a.company_id,
+            min(a.machine_id) AS machine_id
+           FROM igo_attendance_machine_company_rel a
+          GROUP BY a.company_id
+        ), igo_attendance_raw_1 AS (
+         SELECT i.id,
+                CASE
+                    WHEN i.check_in_hour::text = ''::text THEN NULL::character varying
+                    ELSE i.check_in_hour
+                END AS check_in_hour,
+                CASE
+                    WHEN i.check_out_hour::text = ''::text THEN NULL::character varying
+                    ELSE i.check_out_hour
+                END AS check_out_hour,
+            i.date,
+            i.create_date,
+            i.write_date,
+            i.hrm_code,
+            i.company_id
+           FROM igo_attendance_raw i
+          WHERE i.write_date > (( SELECT x_job_increment_flag.latest_success_job_datetime_utc - '1 day'::interval
+                   FROM x_job_increment_flag
+                  WHERE x_job_increment_flag.table_name::text = 'igo_attendance_raw'::text AND x_job_increment_flag.job_name::text = 'attendance'::text))
+        ), igo_attendance_raw_2 AS (
+         SELECT iar.id,
+                CASE
+                    WHEN split_part(iar.check_in_hour::text, ':'::text, 1) = ''::text THEN '00'::text
+                    WHEN split_part(iar.check_in_hour::text, ':'::text, 1)::double precision > 23::double precision THEN '00'::text
+                    ELSE split_part(iar.check_in_hour::text, ':'::text, 1)
+                END AS check_in_hour_hour,
+                CASE
+                    WHEN split_part(iar.check_in_hour::text, ':'::text, 2) = ''::text THEN '00'::text
+                    WHEN split_part(iar.check_in_hour::text, ':'::text, 2)::double precision > 59::double precision THEN '00'::text
+                    ELSE split_part(iar.check_in_hour::text, ':'::text, 2)
+                END AS check_in_hour_minute,
+                CASE
+                    WHEN split_part(iar.check_out_hour::text, ':'::text, 1) = ''::text THEN '00'::text
+                    WHEN split_part(iar.check_out_hour::text, ':'::text, 1)::double precision > 23::double precision THEN '00'::text
+                    ELSE split_part(iar.check_out_hour::text, ':'::text, 1)
+                END AS check_out_hour_hour,
+                CASE
+                    WHEN split_part(iar.check_out_hour::text, ':'::text, 2) = ''::text THEN '00'::text
+                    WHEN split_part(iar.check_out_hour::text, ':'::text, 2)::double precision > 59::double precision THEN '00'::text
+                    ELSE split_part(iar.check_out_hour::text, ':'::text, 2)
+                END AS check_out_hour_minute,
+            iar.date,
+            iar.create_date,
+            iar.write_date,
+            iar.hrm_code::integer AS hrm_code,
+            am.id AS machine_id_in,
+            am.id AS machine_id_out,
+            iar.company_id
+           FROM igo_attendance_raw_1 iar
+             FULL JOIN machine_company_rel mc ON iar.company_id = mc.company_id
+             FULL JOIN igo_attendance_machine am ON am.id = mc.machine_id
+          WHERE iar.date IS NOT NULL
+        ), igo_attendance_raw_full AS (
+         SELECT iar.id,
+            ((iar.check_in_hour_hour || ':'::text) || iar.check_in_hour_minute)::time without time zone AS check_in_hour,
+            ((iar.check_out_hour_hour || ':'::text) || iar.check_out_hour_minute)::time without time zone AS check_out_hour,
+            iar.date,
+            iar.create_date,
+            iar.write_date,
+            iar.hrm_code,
+            iar.machine_id_in,
+            iar.machine_id_out,
+            iar.company_id
+           FROM igo_attendance_raw_2 iar
+        ), ci_co AS (
+         SELECT a.hrm_code,
+            a.date,
+                CASE
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Monday   '::text THEN '0'::text
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Tuesday  '::text THEN '1'::text
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Wednesday'::text THEN '2'::text
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Thursday '::text THEN '3'::text
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Friday   '::text THEN '4'::text
+                    WHEN to_char(a.date::timestamp with time zone, 'Day'::text) = 'Saturday '::text THEN '5'::text
+                    ELSE '6'::text
+                END AS day_of_week,
+            min(a.check_in_hour) AS check_in_hour,
+            max(a.check_out_hour) AS check_out_hour,
+            ( SELECT igo_attendance_raw_full.machine_id_in
+                   FROM igo_attendance_raw_full
+                  WHERE igo_attendance_raw_full.hrm_code = a.hrm_code AND igo_attendance_raw_full.date = a.date AND igo_attendance_raw_full.check_in_hour = min(a.check_in_hour)
+                 LIMIT 1) AS machine_id_in,
+            ( SELECT igo_attendance_raw_full.machine_id_out
+                   FROM igo_attendance_raw_full
+                  WHERE igo_attendance_raw_full.hrm_code = a.hrm_code AND igo_attendance_raw_full.date = a.date AND igo_attendance_raw_full.check_out_hour = max(a.check_out_hour)
+                 LIMIT 1) AS machine_id_out
+           FROM igo_attendance_raw_full a
+          GROUP BY a.hrm_code, a.date
+        ), ci_co_tz AS (
+         SELECT e.id AS employee_id,
+            e.resource_calendar_id,
+            iha.id AS hrm_id,
+            rc2.tz AS calendar_tz,
+            e.company_id,
+            cc.date,
+            cc.day_of_week,
+            cc.check_in_hour,
+            cc.check_out_hour,
+            cc.machine_id_in,
+            cc.machine_id_out,
+            ((cc.date::text || ' '::text) || cc.check_in_hour::text)::timestamp without time zone AS check_in,
+            ((cc.date::text || ' '::text) || cc.check_out_hour::text)::timestamp without time zone AS check_out
+           FROM ci_co cc
+             JOIN igo_hrm_account iha ON cc.hrm_code = iha.code
+             JOIN hr_employee e ON iha.id = e.hrm_id AND e.hrm_id IS NOT NULL
+             JOIN resource_calendar rc2 ON e.resource_calendar_id = rc2.id
+        ), work_period AS (
+         SELECT rc_1.id AS calendar_id,
+            rc_1.name AS calendar_name,
+            rc_1.tz,
+            rca_1.name AS period_name,
+            rca_1.dayofweek,
+            rca_1.day_period,
+            to_char('01:00:00'::interval * floor(rca_1.hour_from) + '00:01:00'::interval * floor((rca_1.hour_from - floor(rca_1.hour_from)) * 60::double precision) + '00:00:01'::interval * round(((rca_1.hour_from - floor(rca_1.hour_from)) * 60::double precision - floor((rca_1.hour_from - floor(rca_1.hour_from)) * 60::double precision)) * 60::double precision), 'HH24:MI:SS'::text)::time without time zone AS hour_from,
+            to_char('01:00:00'::interval * floor(rca_1.hour_to) + '00:01:00'::interval * floor((rca_1.hour_to - floor(rca_1.hour_to)) * 60::double precision) + '00:00:01'::interval * round(((rca_1.hour_to - floor(rca_1.hour_to)) * 60::double precision - floor((rca_1.hour_to - floor(rca_1.hour_to)) * 60::double precision)) * 60::double precision), 'HH24:MI:SS'::text)::time without time zone AS hour_to,
+            rca_1.duration_days
+           FROM resource_calendar rc_1
+             LEFT JOIN resource_calendar_attendance rca_1 ON rc_1.id = rca_1.calendar_id
+        ), ci_co_tz_final AS (
+         SELECT ct.employee_id,
+            ct.hrm_id,
+            ct.resource_calendar_id,
+            ct.calendar_tz,
+            ct.company_id,
+            ct.date AS date_employee_tz,
+            ct.machine_id_in,
+            ct.machine_id_out,
+            ct.check_in,
+            ct.check_out,
+            ((ct.date::text || ' '::text) || wp.hour_from::text)::timestamp without time zone AS hour_from,
+            ((ct.date::text || ' '::text) || wp.hour_to::text)::timestamp without time zone AS hour_to,
+            COALESCE(wp.duration_days, 0::double precision) AS duration_days
+           FROM ci_co_tz ct
+             LEFT JOIN work_period wp ON ct.resource_calendar_id = wp.calendar_id AND ct.day_of_week = wp.dayofweek::text
+        ), daily_worked_hours AS (
+         SELECT c.employee_id,
+            c.hrm_id,
+            c.resource_calendar_id,
+            c.calendar_tz,
+            c.company_id,
+            c.date_employee_tz,
+            c.machine_id_in,
+            c.machine_id_out,
+            c.check_in,
+            c.check_out,
+            c.hour_from,
+            c.hour_to,
+            c.duration_days,
+                CASE
+                    WHEN c.check_in IS NULL OR c.check_out IS NULL THEN '00:00:00'::interval
+                    WHEN c.check_in < c.hour_to AND c.check_out > c.hour_from THEN LEAST(c.check_out, c.hour_to) - GREATEST(c.check_in, c.hour_from)
+                    ELSE '00:00:00'::interval
+                END AS worked_hours,
+                CASE
+                    WHEN c.check_in IS NULL THEN 0
+                    WHEN c.check_in >= c.hour_from THEN EXTRACT(epoch FROM (c.check_in - c.hour_from) / 60::double precision)::integer
+                    ELSE 0
+                END AS late_minutes,
+                CASE
+                    WHEN c.check_out IS NULL THEN 0
+                    WHEN c.check_out <= c.hour_to THEN EXTRACT(epoch FROM (c.hour_to - c.check_out) / 60::double precision)::integer
+                    ELSE 0
+                END AS early_minutes,
+            EXTRACT(epoch FROM COALESCE(c.hour_to - c.hour_from, '00:00:00'::interval)) AS working_hours
+           FROM ci_co_tz_final c
+          WHERE c.check_in IS NOT NULL OR c.check_out IS NOT NULL OR c.hour_from IS NOT NULL OR c.hour_to IS NOT NULL
+        ), attendance_final AS (
+         SELECT dwh.employee_id,
+            dwh.hrm_id,
+            dwh.resource_calendar_id,
+            dwh.calendar_tz,
+            dwh.company_id,
+            dwh.date_employee_tz,
+            dwh.machine_id_in,
+            dwh.machine_id_out,
+            dwh.check_in,
+            dwh.check_out,
+            dwh.hour_from,
+            dwh.hour_to,
+            dwh.duration_days,
+            dwh.worked_hours,
+            dwh.late_minutes,
+            dwh.early_minutes,
+            dwh.working_hours,
+                CASE
+                    WHEN dwh.working_hours = 0::numeric THEN 0::double precision
+                    ELSE (EXTRACT(epoch FROM dwh.worked_hours) / dwh.working_hours)::double precision * dwh.duration_days
+                END AS working_days
+           FROM daily_worked_hours dwh
+        ), hr_attendance_update AS (
+         SELECT t.employee_id,
+            t.company_id,
+            t.date_employee_tz,
+            sum(EXTRACT(epoch FROM t.hour_from)) AS hour_from,
+            sum(EXTRACT(epoch FROM t.hour_to)) AS hour_to,
+            COALESCE(EXTRACT(epoch FROM sum(t.worked_hours) FILTER (WHERE t.duration_days <> 0::double precision))::double precision / 3600::double precision, 0::double precision) AS worked_hours,
+            COALESCE(sum(t.late_minutes) FILTER (WHERE t.duration_days <> 0::double precision) - COALESCE(sum(t.late_minutes) FILTER (WHERE t.duration_days = 0::double precision), 0::bigint), 0::bigint) AS in_late,
+            COALESCE(sum(t.early_minutes) FILTER (WHERE t.duration_days <> 0::double precision) - COALESCE(sum(t.early_minutes) FILTER (WHERE t.duration_days = 0::double precision), 0::bigint), 0::bigint) AS out_early,
+            COALESCE(sum(t.working_days) FILTER (WHERE t.duration_days <> 0::double precision), 0::double precision) AS working_days,
+            COALESCE(sum(t.working_hours) FILTER (WHERE t.duration_days <> 0::double precision), 0::numeric)::double precision / 60::double precision AS working_minutes
+           FROM attendance_final t
+          GROUP BY t.employee_id, t.company_id, t.date_employee_tz
+        ), hr_attendance_final AS (
+         SELECT c1.employee_id,
+            c1.hrm_id,
+            c1.company_id,
+            c1.resource_calendar_id,
+            iam1.location AS in_address,
+            iam2.location AS out_address,
+            c1.check_in - EXTRACT(hour FROM (CURRENT_TIMESTAMP AT TIME ZONE c1.calendar_tz) - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))::double precision * '01:00:00'::interval AS check_in,
+            c1.check_out - EXTRACT(hour FROM (CURRENT_TIMESTAMP AT TIME ZONE c1.calendar_tz) - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))::double precision * '01:00:00'::interval AS check_out,
+                CASE
+                    WHEN c2.worked_hours < 0::double precision THEN 0::double precision
+                    ELSE c2.worked_hours
+                END AS worked_hours,
+                CASE
+                    WHEN c2.in_late < 0 THEN 0::bigint
+                    WHEN c2.in_late::double precision > c2.working_minutes THEN 0::bigint
+                    ELSE c2.in_late
+                END AS in_late,
+                CASE
+                    WHEN c2.out_early < 0 THEN 0::bigint
+                    WHEN c2.out_early::double precision > c2.working_minutes THEN 0::bigint
+                    ELSE c2.out_early
+                END AS out_early,
+                CASE
+                    WHEN c2.working_days < 0::double precision THEN 0::double precision
+                    ELSE c2.working_days
+                END AS working_days,
+            c1.date AS date_employee_tz
+           FROM ci_co_tz c1
+             LEFT JOIN hr_attendance_update c2 ON c1.employee_id = c2.employee_id AND c1.company_id = c2.company_id AND c1.date = c2.date_employee_tz
+             LEFT JOIN resource_calendar rc_1 ON c1.resource_calendar_id = rc_1.id
+             LEFT JOIN igo_attendance_machine iam1 ON c1.machine_id_in = iam1.id
+             LEFT JOIN igo_attendance_machine iam2 ON c1.machine_id_out = iam2.id
+        ), attendance_date AS (
+         SELECT he_1.id AS employee_id,
+            generate_series(GREATEST('2024-06-01'::date, he_1.hiring_date)::timestamp with time zone, now()::date::timestamp with time zone, '1 day'::interval)::date AS attendance_date
+           FROM hr_employee he_1
+          WHERE he_1.active AND he_1.hiring_date IS NOT NULL
+        )
+ SELECT t1.employee_id,
+    he.hrm_id,
+    COALESCE(t2.company_id, he.company_id) AS company_id,
+    COALESCE(t2.resource_calendar_id, he.resource_calendar_id) AS resource_calendar_id,
+    t2.in_address,
+    t2.out_address,
+    t2.check_in,
+    t2.check_out,
+    COALESCE(t2.worked_hours, 0::double precision) AS worked_hours,
+    COALESCE(t2.in_late, 0::bigint) AS in_late,
+    COALESCE(t2.out_early, 0::bigint) AS out_early,
+    COALESCE(t2.working_days, 0::double precision) AS working_days,
+    t1.attendance_date AS date_employee_tz,
+        CASE
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 0::numeric THEN 'CN'::text
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 1::numeric THEN 'Hai'::text
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 2::numeric THEN 'Ba'::text
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 3::numeric THEN 'Tư'::text
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 4::numeric THEN 'Năm'::text
+            WHEN EXTRACT(dow FROM t1.attendance_date) = 5::numeric THEN 'Sáu'::text
+            ELSE 'Bảy'::text
+        END AS day_of_week,
+        CASE
+            WHEN rca.dayofweek IS NULL THEN 'off_schedule'::text
+            ELSE 'accepted'::text
+        END AS status,
+    'manual'::text AS in_mode,
+    'manual'::text AS out_mode,
+    to_char(t2.check_in + EXTRACT(hour FROM (CURRENT_TIMESTAMP AT TIME ZONE rc.tz) - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))::double precision * '01:00:00'::interval, 'HH24:MI'::text) AS check_in_raw,
+    to_char(t2.check_out + EXTRACT(hour FROM (CURRENT_TIMESTAMP AT TIME ZONE rc.tz) - (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))::double precision * '01:00:00'::interval, 'HH24:MI'::text) AS check_out_raw,
+    rc.name AS resource_calendar_name
+   FROM attendance_date t1
+     LEFT JOIN hr_employee he ON t1.employee_id = he.id
+     LEFT JOIN hr_attendance_final t2 ON t1.employee_id = t2.employee_id AND t1.attendance_date = t2.date_employee_tz AND t2.employee_id IS NOT NULL
+     LEFT JOIN resource_calendar rc ON COALESCE(t2.resource_calendar_id, he.resource_calendar_id) = rc.id
+     LEFT JOIN ( SELECT DISTINCT resource_calendar_attendance.calendar_id,
+            resource_calendar_attendance.dayofweek
+           FROM resource_calendar_attendance) rca ON rc.id = rca.calendar_id AND EXTRACT(dow FROM (t1.attendance_date - '1 day'::interval)::date) = rca.dayofweek::integer::numeric
+  WHERE t2.check_in IS NOT NULL OR t2.check_out IS NOT NULL OR COALESCE(t1.attendance_date, t2.date_employee_tz) IS NOT NULL;
