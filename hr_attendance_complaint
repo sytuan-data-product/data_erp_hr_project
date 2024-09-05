@@ -1,1 +1,3 @@
+/* This job will recalculate attendance data when the complaint form is approved.
+I will use a view table "v_hr_attendance_complaint_approved" to recalculate. You can go back and access it */
 
