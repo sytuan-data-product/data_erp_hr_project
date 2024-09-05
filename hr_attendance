@@ -35,6 +35,6 @@ with time_now as (select timezone('UTC', now()) as time_now)
     )
       
 	UPDATE x_job_increment_flag x1
-	SET latest_success_job_datetime_utc = time_now.time_now
+	SET latest_success_time = time_now.time_now
 	from time_now, x_job_increment_flag x2
 	WHERE x1.table_name = 'hr_attendance_raw' AND x1.job_name = 'hr_attendance';
