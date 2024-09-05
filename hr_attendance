@@ -1,1 +1,40 @@
+/* In this job, I use a view table "v_hr_attendance_raw_transform" to upsert. The objective is to reduce the command in the job 
+and make it easy to debug and fix errors. I just need to update the view table and everything is done.
+The view table "v_hr_attendance_raw_transform", I attach it outside. You can go back and access it */
 
+-- insert data of hr_attendance_raw into hr_attendance
+with time_now as (select timezone('UTC', now()) as time_now)
+
+, insert_data as (
+	INSERT INTO hr_attendance (employee_id, company_id, calendar_id, date, check_in, check_out, check_in_address, check_out_address
+                            , worked_hours, working_days, in_late, out_early, status, original_check_in, original_check_out, is_lock_complaint)
+       
+	SELECT v1.*
+	FROM v_hr_attendance_raw_transform v1
+	where ((v1.status <> 'off_schedule')
+	or (v1.status = 'off_schedule' and v1.check_in is not null)
+	or (v1.status = 'off_schedule' and v1.check_out is not null)) -- request from my client: if it is weekend and no attendance, will not show attendance data rows. 
+	ON CONFLICT (employee_id, date)
+	DO update 
+	set 
+		check_in = excluded.check_in
+		, check_out = excluded.check_out
+		, worked_hours = excluded.worked_hours
+		, in_late = excluded.in_late
+		, out_early = excluded.out_early
+		, working_days = excluded.working_days
+		, original_check_in = excluded.original_check_in
+		, original_check_out = excluded.original_check_out
+		, check_in_address = excluded.check_in_address
+    , check_out_address = excluded.check_out_address
+    where hr_attendance.status = 'accepted' -- don't update when attendance is in approval process
+    and ((hr_attendance.check_in_raw is null and excluded.check_in_raw is not null)
+    or (hr_attendance.check_out_raw is null and excluded.check_out_raw is not null)
+    or (hr_attendance.check_in_raw <> excluded.check_in_raw)
+    or (hr_attendance.check_out_raw <> excluded.check_out_raw)) -- only update when having change
+    )
+      
+	UPDATE x_job_increment_flag x1
+	SET latest_success_job_datetime_utc = time_now.time_now
+	from time_now, x_job_increment_flag x2
+	WHERE x1.table_name = 'hr_attendance_raw' AND x1.job_name = 'hr_attendance';
