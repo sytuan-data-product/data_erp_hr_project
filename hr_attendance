@@ -6,8 +6,7 @@ The view table "v_hr_attendance_raw_transform", I attach it outside. You can go 
 with time_now as (select timezone('UTC', now()) as time_now)
 
 , insert_data as (
-	INSERT INTO hr_attendance (employee_id, company_id, calendar_id, date, check_in, check_out, check_in_address, check_out_address
-                            , worked_hours, working_days, in_late, out_early, status, original_check_in, original_check_out, is_lock_complaint)
+	INSERT INTO hr_attendance (employee_id, company_id, calendar_id, date, check_in, check_out, worked_hours, working_days, in_late, out_early, status, original_check_in, original_check_out, is_lock_complaint)
        
 	SELECT v1.*
 	FROM v_hr_attendance_raw_transform v1
