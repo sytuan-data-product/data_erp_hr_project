@@ -1,1 +1,81 @@
+/* Context: Before integrating timekeeping machine with the ERP system, HRs enter the ID of employees in the machines (UserID) by using auto-generated IDs in Google sheets file.
+Therefore, I have to create a mapping table "x_map_userinfo_employee" to map employee's id in the machines with employee code. From now on, HRs will enter employee code equals to UserID. 
+Moreover, I create a table "x_job_increment_flag" to flag the success time of the jobs. Each time the jobs run, the jobs will scan all the latest data since the last time it ran successfully. 
+That is necessary to optimize runtime, resources & provide real-time data in the fastest way. */
 
+-- insert data of DB machines (schema pmsd) into hr_attendance_raw
+with mv_check_in_out as ( -- get all data of all machines
+	SELECT 
+    cio."MachineNo"
+    , cio."TimeDate"
+    , cio."UserEnrollNumber"
+    , cio."TimeStr"
+  FROM pmsd."CheckInOut" cio 
+UNION ALL -- 2 tables CheckInOut & CheckInOutMT store data of different timekeeping machines.
+  SELECT 
+    mcc."MachineNumber" AS "MachineNo"
+    , date(cio."CHECKTIME") AS "TimeDate"
+    , cast(u."BADGENUMBER" as integer) AS "UserEnrollNumber"
+    , cio."CHECKTIME" AS "TimeStr"
+  FROM pmsd."CheckInOutMT" cio
+     JOIN pmsd."MachinesMT" mcc ON cio.sn::text = mcc.sn::text
+     join pmsd."USERINFO" u on cio."USERID" = u."UserID"
+)
+
+, time_now as (select timezone('UTC', now()) as time_now) -- get time_now to update on x_job_increment_flag
+, time_job as (
+	select cast(date_trunc('day',latest_success_time - interval '1 day') as text) as timejob -- scan data from 1 day ago
+	from x_job_increment_flag where table_name = 'CheckInOut' and job_name = 'hr_attendance_raw'
+)
+
+, cio_pms as (
+select
+		coalesce(idm.employee_code, mci."UserEnrollNumber") as employee_code -- the reason why using left join: if not in x_map_userinfo_employee, get employee_code
+		, mci."TimeDate" as "date"
+		, MIN ( mci."TimeStr" ) AS check_in 
+		, MAX ( mci."TimeStr" ) AS check_out
+from mv_check_in_out mci
+LEFT JOIN ( SELECT * FROM pmsd.x_map_userinfo_employee ) idm ON ( mci."MachineNo" = idm.machine_id AND mci."UserEnrollNumber" = idm.user_id_machine ) -- only get data of users registered in machines
+where cast(mci."TimeStr" as text) >= (select timejob from time_job) -- only get data having checktime >= the last time job ran successfully
+group by 
+	coalesce(idm.employee_code, mci."UserEnrollNumber"),
+	mci."TimeDate"
+)
+
+, insert_data as ( -- insert into hr_attendance_raw, using upsert
+insert into hr_attendance_raw (company_id, employee_code, check_in_hour, check_out_hour, date, create_date, write_date, is_from_machine)
+select
+	he.company_id 
+	, cp.employee_code_code
+	, to_char(cp.check_in, 'HH24:MI'::text) as check_in_hour
+	, ( CASE WHEN cp.check_in = cp.check_out THEN NULL ELSE TO_CHAR( cp.check_out, 'HH24:MI' ) END ) AS check_out_hour
+	, cp.date
+	, (select time_now.time_now from time_now) as create_date
+	, (select time_now.time_now from time_now) as write_date
+	, true
+from cio_pms cp
+join hr_employee he on cp.employee_code = he.employee_code
+
+on conflict (employee_code, date,is_from_machine)
+do update
+set 
+	check_in_hour = case
+	                    when EXCLUDED.check_in_hour::time < igo_attendance_raw.check_in_hour::time --only update when EXCLUDED.check_in_hour < igo_attendance_raw.check_in_hour
+	                    then EXCLUDED.check_in_hour else igo_attendance_raw.check_in_hour
+	                end
+	, check_out_hour = excluded.check_out_hour -- always update the latest check_out
+	, write_date = CASE 
+                    WHEN EXCLUDED.check_in_hour IS DISTINCT FROM igo_attendance_raw.check_in_hour
+                    OR EXCLUDED.check_out_hour IS DISTINCT FROM igo_attendance_raw.check_out_hour
+                    THEN EXCLUDED.write_date
+                    ELSE igo_attendance_raw.write_date
+                 end -- only update when having change
+where igo_attendance_raw.check_out_hour is null 
+or (igo_attendance_raw.check_out_hour is not null and excluded.check_out_hour is not null) -- condition to avoid updating null to existing data
+)
+
+-- update successful runtime to flag table
+update x_job_increment_flag x1
+set latest_success_time = time_now.time_now
+from x_job_increment_flag x2, time_now
+where x1.table_name = 'CheckInOut' and x1.job_name = 'hr_attendance_raw';
