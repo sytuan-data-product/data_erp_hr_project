@@ -13,6 +13,7 @@ This document includes:
 
 You can access **Modeling & Visualization** documents at the links below: 
   1. [Conceptual model & Logical model](https://drive.google.com/file/d/1jwrRMSy3suCIOt6F4Pll7s-t5AMjmLoo/view?usp=drive_link)
-  2. [Visualization documents](https://drive.google.com/file/d/1-GLB4zsnhLy4BMws_LFt4sJl5StCdjBv/view?usp=drive_link)
+  2. [Physical model](https://docs.google.com/spreadsheets/d/1Xfk_gFDdqN5uAG5pbCKIJ81UUEBvSATXW8_qn0hhHhw/edit?usp=sharing)
+  3. [Visualization documents](https://drive.google.com/file/d/1-GLB4zsnhLy4BMws_LFt4sJl5StCdjBv/view?usp=drive_link)
 
 And you can research my **SQL script** in the attached files above.
